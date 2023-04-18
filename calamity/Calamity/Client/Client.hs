@@ -409,7 +409,11 @@ catchAllLogging m = do
 
 handleEvent :: BotC r => Int -> DispatchData -> P.Sem r ()
 handleEvent shardID data' = do
-  debug . T.pack $ "handling an event: " <> ctorName data'
+  -- hide most annoying messages from debug output
+  case data' of
+    PresenceUpdate _ -> pure ()
+    TypingStart _ -> pure ()
+    _ -> debug . T.pack $ "handling an event: " <> ctorName data'
   eventHandlers <- P.atomicGet
   actions <- P.runFail $ do
     evtCounter <- registerCounter "events_received" [("type", T.pack $ ctorName data'), ("shard", showt shardID)]
@@ -629,18 +633,21 @@ handleEvent' eh evt@(MessageReactionRemoveAll MessageReactionRemoveAllData {mess
         _ -> []
   pure $ rawActions <> actions
 handleEvent' eh evt@(PresenceUpdate PresenceUpdateData {userID, presence = Presence {guildID}}) = do
-  Just oldGuild <- getGuild guildID
-  Just oldMember <- pure $ oldGuild ^. #members % at (coerceSnowflake userID)
-  updateCache evt
-  Just newGuild <- getGuild guildID
-  Just newMember <- pure $ newGuild ^. #members % at (coerceSnowflake userID)
-  let oldUser :: User = let Member {..} = oldMember in User {..}
-      newUser :: User = let Member {..} = newMember in User {..}
-      userUpdates =
-        if oldUser /= newUser
-          then map ($ (oldUser, newUser)) (getEventHandlers @'UserUpdateEvt eh)
-          else mempty
-  pure $ userUpdates <> map ($ (newGuild, oldMember, newMember)) (getEventHandlers @'GuildMemberUpdateEvt eh)
+  oldGuildMaybe <- getGuild guildID
+  case oldGuildMaybe of
+    Nothing -> pure [] -- TODO: there is something wrong here
+    Just oldGuild -> do
+      Just oldMember <- pure $ oldGuild ^. #members % at (coerceSnowflake userID)
+      updateCache evt
+      Just newGuild <- getGuild guildID
+      Just newMember <- pure $ newGuild ^. #members % at (coerceSnowflake userID)
+      let oldUser :: User = let Member {..} = oldMember in User {..}
+          newUser :: User = let Member {..} = newMember in User {..}
+          userUpdates =
+            if oldUser /= newUser
+              then map ($ (oldUser, newUser)) (getEventHandlers @'UserUpdateEvt eh)
+              else mempty
+      pure $ userUpdates <> map ($ (newGuild, oldMember, newMember)) (getEventHandlers @'GuildMemberUpdateEvt eh)
 handleEvent' eh (TypingStart TypingStartData {channelID, guildID, userID, timestamp = UnixTimestamp timestamp}) =
   case guildID of
     Just gid -> do
